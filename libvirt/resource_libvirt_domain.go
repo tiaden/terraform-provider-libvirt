@@ -25,6 +25,8 @@ type pendingMapping struct {
 	networkName string
 }
 
+const sleep = 120 * time.Second
+
 func init() {
 	spew.Config.Indent = "\t"
 }
@@ -795,6 +797,13 @@ func resourceLibvirtDomainUpdate(ctx context.Context, d *schema.ResourceData, me
 
 	if err := destroyDomainByUserRequest(ctx, virConn, domain, d.Timeout(schema.TimeoutCreate), d); err != nil {
 		return diag.FromErr(err)
+	}
+
+	time.Sleep(sleep)
+
+	if diag := resourceLibvirtDomainRead(ctx, d, meta); diag.HasError() {
+
+		return diag
 	}
 
 	return nil
