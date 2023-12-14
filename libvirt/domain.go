@@ -900,22 +900,82 @@ func setTPMs(d *schema.ResourceData, domainDef *libvirtxml.Domain) {
 		domainDef.Devices.TPMs = append(domainDef.Devices.TPMs, tpm)
 	}
 }
-
-func destroyDomainByUserRequest(virConn *libvirt.Libvirt, d *schema.ResourceData, domain libvirt.Domain) error {
+func destroyDomainByUserRequest(ctx context.Context, virConn *libvirt.Libvirt, domain libvirt.Domain,
+	timeout time.Duration, d *schema.ResourceData) error {
 	if d.Get("running").(bool) {
 		return nil
 	}
 
-	log.Printf("Destroying libvirt domain %s", uuidString(domain.UUID))
 	state, _, err := virConn.DomainGetState(domain, 0)
 	if err != nil {
 		return fmt.Errorf("couldn't get info about domain: %w", err)
 	}
 
+	log.Printf("Shutting down libvirt domain %s", uuidString(domain.UUID))
+
+	domainShutdownFlag := libvirt.DomainShutdownDefault
+	qemuAgentEnabled := d.Get("qemu_agent").(bool)
+
+	qemuAgentRunningNow := false
+	if qemuAgentEnabled {
+		qemuAgentRunningNow, _ = agentIsRunning(virConn, domain)
+	}
+
+	if qemuAgentEnabled && qemuAgentRunningNow {
+		log.Printf("[DEBUG] Qemu agent detected ! shutting down using qemu guest agent mode %s", uuidString(domain.UUID))
+		domainShutdownFlag = libvirt.DomainShutdownGuestAgent
+	}
+
 	if libvirt.DomainState(state) == libvirt.DomainRunning || libvirt.DomainState(state) == libvirt.DomainPaused {
-		if err := virConn.DomainDestroy(domain); err != nil {
+		if err := virConn.DomainShutdownFlags(domain, domainShutdownFlag); err != nil {
 			return fmt.Errorf("couldn't destroy libvirt domain: %w", err)
 		}
+	}
+
+	waitFunc := func() (interface{}, string, error) {
+
+		state, err := domainGetState(virConn, domain)
+		if err != nil {
+			return false, "", err
+		}
+
+		for _, fatalState := range []string{"crashed", "pmsuspended"} {
+			if state == fatalState {
+				return false, "", errDomainInvalidState
+			}
+		}
+
+		return true, state, nil
+	}
+
+	stateConf := &resource.StateChangeConf{
+		Pending:    []string{"running"},
+		Target:     []string{"shutoff", "shutdown"},
+		Refresh:    waitFunc,
+		Timeout:    timeout,
+		MinTimeout: resourceStateMinTimeout,
+		Delay:      resourceStateDelay,
+	}
+
+	_, err = stateConf.WaitForStateContext(ctx)
+	if err != nil {
+		// Shutting down gracefully failed, now pull the power cord
+
+		log.Printf("couldn't shutdown/shutoff libvirt domain gracefully: %s", err)
+		log.Printf("Destroying libvirt domain %s", uuidString(domain.UUID))
+
+		state, _, err = virConn.DomainGetState(domain, 0)
+		if err != nil {
+			return fmt.Errorf("couldn't get info about domain: %w", err)
+		}
+
+		if libvirt.DomainState(state) == libvirt.DomainRunning || libvirt.DomainState(state) == libvirt.DomainPaused {
+			if err := virConn.DomainDestroy(domain); err != nil {
+				return fmt.Errorf("couldn't destroy libvirt domain: %w", err)
+			}
+		}
+	} else {
+		log.Printf("graceful shutdown of libvirt domain was successful")
 	}
 
 	return nil
