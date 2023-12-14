@@ -673,7 +673,7 @@ func resourceLibvirtDomainCreate(ctx context.Context, d *schema.ResourceData, me
 		}
 	}
 
-	if err := destroyDomainByUserRequest(virConn, d, domain); err != nil {
+	if err := destroyDomainByUserRequest(ctx, virConn, domain, d.Timeout(schema.TimeoutCreate), d); err != nil {
 		return diag.FromErr(err)
 	}
 
