@@ -208,7 +208,12 @@ func domainGetIfacesInfo(virConn *libvirt.Libvirt, domain libvirt.Domain, rd *sc
 	// setup source of interface address information
 	var addrsrc uint32
 	qemuAgentEnabled := rd.Get("qemu_agent").(bool)
+	qemuAgentRunningNow := false
 	if qemuAgentEnabled {
+		qemuAgentRunningNow, _ = agentIsRunning(virConn, domain)
+	}
+
+	if qemuAgentEnabled && qemuAgentRunningNow {
 		addrsrc = uint32(libvirt.DomainInterfaceAddressesSrcAgent)
 		log.Printf("[DEBUG] qemu-agent used to query interface info")
 	} else {
